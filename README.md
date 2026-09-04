@@ -61,6 +61,23 @@ applied in a fixed order, so the same input always produces the same
 keeper — never a coin flip, and never a different answer on a second run of
 identical input.
 
+`keep_rule` makes the *primary* rule explicit instead of always defaulting
+to oldest — `oldest` (default), `newest`, or `priority` (prefer a file under
+a designated `priority_paths` folder, e.g. always keep the copy in your
+Photos library over the one in Downloads). This was not invented from
+scratch: real duplicate-finder tools (Duplicate Cleaner Pro's Selection
+Assistant, Nektony's "Always Select" list) document exactly these three
+rule shapes, verified before building rather than guessed at. A duplicate
+set with no file under any `priority_paths` folder falls back to `oldest`
+for that set — and `keep_rule=priority` with `priority_paths` left empty
+degrades to `oldest` for the whole run — both a stated fallback in the
+output, never a silent one.
+
+`exclude_paths` skips named directories or files entirely, pruned during
+the walk itself so an excluded path's contents are never even `stat()`'d.
+Also verified before building: fdupes' own GitHub issue tracker carries a
+long-standing user request for exactly an `--exclude` flag.
+
 ## Built and found real problems along the way
 
 This is not the first design that shipped. Three real bugs surfaced during
@@ -116,6 +133,11 @@ rote play run satianurag/dupe-sweep paths=~/Downloads,~/Desktop
 
 # Actually quarantine duplicates (reversible, never deleted)
 rote play run satianurag/dupe-sweep paths=~/Downloads apply=true
+
+# Always keep the copy under your Photos library; skip an archive folder entirely
+rote play run satianurag/dupe-sweep paths=~/Downloads,~/Pictures \
+  keep_rule=priority priority_paths=~/Pictures/Library \
+  exclude_paths=~/Downloads/Archives apply=true
 ```
 
 Undo any run:

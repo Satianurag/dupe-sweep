@@ -21,13 +21,16 @@ PREVIEW_CAP = 150
 
 def main():
     discover_summary = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
+    keep_rule = sys.argv[2] if len(sys.argv) > 2 else "oldest"
+    priority_paths_arg = sys.argv[3] if len(sys.argv) > 3 else ""
+    priority_paths = [p.strip() for p in priority_paths_arg.split(",") if p.strip()]
     state_file = discover_summary.get("state_file")
 
     if not state_file or not os.path.isfile(state_file):
         result = {
             "ok": True, "files_scanned": 0, "duplicate_sets": [], "linked_sets": [], "skips": [],
             "total_reclaimable_bytes": 0, "total_duplicate_files": 0, "total_duplicate_sets": 0,
-            "preview_capped": False, "state_file": None,
+            "preview_capped": False, "state_file": None, "keep_rule_effective": keep_rule,
             "roots_resolved": discover_summary.get("roots_resolved", []),
             "demo": discover_summary.get("demo", False),
             "capped": discover_summary.get("capped", False),
@@ -42,7 +45,9 @@ def main():
     skips = [engine.SkipRecord(**s) for s in discover_state.get("skips", [])]
     roots_resolved = discover_state.get("roots_resolved", [])
 
-    dup_sets, linked_sets = engine.build_duplicate_sets(records, roots_resolved, skips)
+    dup_sets, linked_sets, effective_rule = engine.build_duplicate_sets(
+        records, roots_resolved, skips, keep_rule, priority_paths,
+    )
 
     total_reclaimable = sum(s.reclaimable_bytes for s in dup_sets)
     total_duplicate_files = sum(len(s.duplicates) for s in dup_sets)
@@ -70,6 +75,9 @@ def main():
         "total_skips": len(skips),
         "preview_capped": preview_capped,
         "state_file": scan_state_file,
+        "keep_rule_requested": keep_rule,
+        "keep_rule_effective": effective_rule,
+        "excluded_count": discover_summary.get("excluded_count", 0),
         "roots_resolved": roots_resolved,
         "demo": discover_summary.get("demo", False),
         "capped": discover_summary.get("capped", False),

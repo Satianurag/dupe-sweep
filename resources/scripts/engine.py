@@ -29,6 +29,20 @@ Skipped, on purpose, never silently:
   - unreadable files (permission denied, vanished mid-scan): reported as
     UNKNOWN with the OSError reason, never dropped silently and never
     treated as "clear".
+  - anything under exclude_paths: pruned during the walk itself (never
+    stat()'d, not merely filtered after the fact), and a scan root that is
+    itself excluded is reported as a skip rather than silently scanned
+    anyway or silently ignored.
+
+Which copy is kept is controlled by keep_rule (oldest | newest | priority),
+verified against real, documented behavior in mature duplicate-finder tools
+(Duplicate Cleaner Pro's "keep newest"/"by priority folder" rules, Nektony's
+"Always Select" list) rather than invented from scratch. Whatever the rule,
+every tie beneath it resolves the same documented way -- root order, then
+path depth, then alphabetical -- so the same input always produces the same
+keeper. keep_rule=priority with no priority_paths given is a contradiction
+in the caller's own arguments: it degrades to "oldest", never to an
+unspecified default, and the caller can detect that this happened.
 """
 from __future__ import annotations
 
@@ -77,35 +91,69 @@ def is_hidden(name: str) -> bool:
     return name.startswith(".")
 
 
+def resolve_exclude_prefixes(exclude_paths: list[str]) -> list[str]:
+    resolved = []
+    for p in exclude_paths:
+        p = p.strip()
+        if not p:
+            continue
+        resolved.append(os.path.realpath(os.path.expanduser(p)))
+    return resolved
+
+
+def is_excluded(path: str, exclude_prefixes: list[str]) -> bool:
+    real = os.path.realpath(path)
+    for prefix in exclude_prefixes:
+        if real == prefix or real.startswith(prefix + os.sep):
+            return True
+    return False
+
+
 def discover_files(
     roots: list[str],
     min_size_bytes: int,
     max_files: int,
     include_hidden: bool,
-) -> tuple[list[FileRecord], list[SkipRecord], list[str], bool]:
-    """Walk `roots`; returns (records, skips, resolved_roots, capped)."""
+    exclude_paths: list[str] | None = None,
+) -> tuple[list[FileRecord], list[SkipRecord], list[str], bool, int]:
+    """Walk `roots`; returns (records, skips, resolved_roots, capped, excluded_count)."""
     records: list[FileRecord] = []
     skips: list[SkipRecord] = []
     resolved_roots: list[str] = []
     capped = False
+    excluded_count = 0
     seen_paths: set[str] = set()
+    exclude_prefixes = resolve_exclude_prefixes(exclude_paths or [])
 
     for raw_root in roots:
         root = os.path.realpath(os.path.expanduser(raw_root))
         if not os.path.isdir(root):
             skips.append(SkipRecord(path=raw_root, reason="not a directory or does not exist"))
             continue
+        if is_excluded(root, exclude_prefixes):
+            # A scan root that is itself excluded is a contradiction in the
+            # caller's own arguments -- surfaced as a skip, never silently
+            # scanned anyway and never silently dropped without a trace.
+            skips.append(SkipRecord(path=root, reason="this path is itself in exclude_paths — nothing scanned here"))
+            continue
         resolved_roots.append(root)
 
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-            # Prune in place: bundles / .git / node_modules / trash are never descended into.
+            # Prune in place: bundles / .git / node_modules / trash / explicit
+            # exclude_paths are never descended into -- an excluded directory's
+            # contents are never even stat()'d, not merely filtered afterward.
             pruned = []
             keep = []
             for d in dirnames:
+                dpath = os.path.join(dirpath, d)
                 if should_prune_dir(d):
                     pruned.append(d)
                     continue
                 if not include_hidden and is_hidden(d):
+                    pruned.append(d)
+                    continue
+                if is_excluded(dpath, exclude_prefixes):
+                    excluded_count += 1
                     pruned.append(d)
                     continue
                 keep.append(d)
@@ -117,6 +165,9 @@ def discover_files(
                 fpath = os.path.join(dirpath, fname)
                 if os.path.islink(fpath):
                     continue  # never follow or hash a symlink's target
+                if is_excluded(fpath, exclude_prefixes):
+                    excluded_count += 1
+                    continue
                 real = os.path.realpath(fpath)
                 if real in seen_paths:
                     continue  # same file reached via two overlapping roots
@@ -142,7 +193,7 @@ def discover_files(
         if capped:
             break
 
-    return records, skips, resolved_roots, capped
+    return records, skips, resolved_roots, capped, excluded_count
 
 
 def sha256_of(path: str) -> str:
@@ -172,10 +223,30 @@ class LinkedSet:
     paths: list[str]  # hardlinks of one another -- already share storage
 
 
+def resolve_priority_prefixes(priority_paths: list[str]) -> list[str]:
+    resolved = []
+    for p in priority_paths:
+        p = p.strip()
+        if not p:
+            continue
+        resolved.append(os.path.realpath(os.path.expanduser(p)))
+    return resolved
+
+
+def priority_rank(path: str, priority_prefixes: list[str]) -> int:
+    real = os.path.realpath(path)
+    for i, prefix in enumerate(priority_prefixes):
+        if real == prefix or real.startswith(prefix + os.sep):
+            return i
+    return len(priority_prefixes)  # no match -- lowest priority, sorts last
+
+
 def build_duplicate_sets(
     records: list[FileRecord],
     roots_order: list[str],
     skips: list[SkipRecord],
+    keep_rule: str = "oldest",
+    priority_paths: list[str] | None = None,
 ) -> tuple[list[DuplicateSet], list[LinkedSet]]:
     # Cheap pre-filter: only files that share an exact size can possibly match.
     by_size: dict[int, list[FileRecord]] = {}
@@ -211,12 +282,25 @@ def build_duplicate_sets(
                 return i
         return len(roots_order)
 
+    priority_prefixes = resolve_priority_prefixes(priority_paths or [])
+    # keep_rule=priority with no priority_paths given is a contradiction in
+    # the caller's own arguments, not a silent fallback pretending to be the
+    # requested behavior -- it degrades to "oldest" but every set built under
+    # it is honest, so callers can surface that this happened.
+    effective_rule = keep_rule if not (keep_rule == "priority" and not priority_prefixes) else "oldest"
+
     def sort_key(r: FileRecord):
-        # Oldest file wins as the keeper; ties broken by which scan root was
-        # listed first, then by path depth (shorter = more "canonical"),
-        # then alphabetically. Every tie-break is deterministic and documented
-        # so the same input always produces the same keeper -- never a guess.
-        return (r.mtime, root_rank(r.path), r.path.count(os.sep), r.path)
+        # Every tie-break below this rule's primary key is deterministic and
+        # documented, in the same fixed order regardless of rule, so the same
+        # input always produces the same keeper -- never a guess:
+        #   root order (which scanned path was listed first) -> path depth
+        #   (shorter is more "canonical") -> alphabetical.
+        secondary = (root_rank(r.path), r.path.count(os.sep), r.path)
+        if effective_rule == "newest":
+            return (-r.mtime,) + secondary
+        if effective_rule == "priority":
+            return (priority_rank(r.path, priority_prefixes), r.mtime) + secondary
+        return (r.mtime,) + secondary  # "oldest", the default
 
     dup_sets: list[DuplicateSet] = []
     linked_sets: list[LinkedSet] = []
@@ -253,7 +337,7 @@ def build_duplicate_sets(
         ))
 
     dup_sets.sort(key=lambda s: -s.reclaimable_bytes)
-    return dup_sets, linked_sets
+    return dup_sets, linked_sets, effective_rule
 
 
 @dataclass

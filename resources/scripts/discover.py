@@ -29,6 +29,8 @@ def main():
     max_files = int(sys.argv[3]) if len(sys.argv) > 3 else 50000
     include_hidden = parse_bool(sys.argv[4]) if len(sys.argv) > 4 else False
     demo = parse_bool(sys.argv[5]) if len(sys.argv) > 5 else False
+    exclude_paths_arg = sys.argv[6] if len(sys.argv) > 6 else ""
+    exclude_paths = [p.strip() for p in exclude_paths_arg.split(",") if p.strip()]
 
     if demo:
         # Copied into a fresh temp dir every run, never scanned in place:
@@ -92,12 +94,12 @@ def main():
     if not roots:
         result = {
             "ok": True, "demo": demo, "roots_input": roots, "roots_resolved": [],
-            "file_count": 0, "skip_count": 0, "capped": False, "state_file": None,
+            "file_count": 0, "skip_count": 0, "excluded_count": 0, "capped": False, "state_file": None,
             "warning": "no paths given -- pass paths=~/Downloads (comma-separated for more than one), or demo=true",
         }
     else:
-        records, skips, resolved_roots, capped = engine.discover_files(
-            roots, min_size_bytes, max_files, include_hidden,
+        records, skips, resolved_roots, capped, excluded_count = engine.discover_files(
+            roots, min_size_bytes, max_files, include_hidden, exclude_paths,
         )
         with open(state_file, "w") as f:
             json.dump({
@@ -112,9 +114,11 @@ def main():
             "roots_resolved": resolved_roots,
             "file_count": len(records),
             "skip_count": len(skips),
+            "excluded_count": excluded_count,
             "capped": capped,
             "min_size_bytes": min_size_bytes,
             "max_files": max_files,
+            "exclude_paths": exclude_paths,
             "state_file": state_file,
         }
 

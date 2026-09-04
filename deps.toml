@@ -1,0 +1,27 @@
+# dupe-sweep host requirements.
+#
+# Required: python3 only, stdlib only -- hashlib, os, shutil, json, time,
+# dataclasses. No pip install of anything, on purpose: nothing to refuse
+# on a machine with a locked-down pip (PEP 668 or otherwise).
+#
+# No git, no gh, no network, no credentials at all -- every step is a
+# local filesystem operation.
+
+schema_version = 1
+
+[[tools]]
+id = "python3"
+command = "python3"
+required = true
+version_requirement = ">=3.8.0"
+
+[[tools.install]]
+manager = "brew"
+package = "python@3"
+
+[[tools.install]]
+manager = "apt"
+package = "python3"
+
+[files]
+required = []

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "kind": "process.exec",
+  "status": {
+    "exit": {
+      "kind": "code",
+      "code": 0
+    },
+    "duration_ms": 43,
+    "timeout_ms": 60000
+  },
+  "stdout": "resources/presentation-fixtures/apply/stdout.json",
+  "stderr": "resources/presentation-fixtures/apply/stderr.txt"
+}

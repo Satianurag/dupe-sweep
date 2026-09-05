@@ -15,7 +15,7 @@
  *   author: Satianurag <anuragsati6476@gmail.com>
  *   workspace: satianurag/dupe-sweep
  * metadata:
- *   version: 0.2.0
+ *   version: 0.3.0
  *   rote_version: 0.79.0
  *   status: released
  *   kind: atomic
@@ -548,7 +548,7 @@ async function renderSuccess(): Promise<void> {
     applied: applyRan,
     apply_requested: applyRequested,
     apply_result: applyOut,
-    play_version: "0.2.0",
+    play_version: "0.3.0",
     run_id: ctx.run.run_id,
     representations: {
       human: "complete — duplicate sets, linked (non-reclaimable) sets, unknowns, and either the dry-run byte count or what was quarantined",

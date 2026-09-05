@@ -15,7 +15,7 @@
  *   author: Satianurag <anuragsati6476@gmail.com>
  *   workspace: satianurag/dupe-sweep
  * metadata:
- *   version: 0.3.0
+ *   version: 0.3.1
  *   rote_version: 0.79.0
  *   status: released
  *   kind: atomic
@@ -24,6 +24,8 @@
  *   format: typescript
  *   requires_endpoints: []
  *   requires_sessions: false
+ *   write_permissions:
+ *   - tool: apply
  *   contract:
  *     atomic: true
  *     input:
@@ -121,10 +123,16 @@
  *   - zero-credentials
  *   - deterministic
  *   - reversible
- * write_permissions:
- * - resource: "<quarantine_dir>/<run-timestamp>/"
- *   mode: create
- *   why: "Duplicate files are moved here (shutil.move), never deleted. Each run gets its own dated subfolder holding a manifest.json (original path, quarantined path, sha256, size, keeper) and a copy of undo.py, so restoring needs only python3, no Rote install."
+ * # Everything this play writes, in the two places the platform actually
+ * # reads: metadata.write_permissions (above) names the step that writes and
+ * # is passed through verbatim to the registry card's effects.declaredWrites,
+ * # which is what the consent panel prints before a run; this top-level list
+ * # is what the audit reach table renders. discover and scan write nothing
+ * # outside rote's own run workspace -- only apply touches your files, and
+ * # only when apply=true, which is not the default.
+ * writes:
+ * - "<quarantine_dir>/<run-timestamp>/ (create, step apply, only when apply=true) -- duplicate files are MOVED here (shutil.move), never deleted. Each run gets its own dated subfolder holding a manifest.json (original path, quarantined path, sha256, size, keeper) and a copy of undo.py, so restoring needs only python3, no Rote install."
+ * - "the original location of each moved duplicate (remove-by-move, step apply, only when apply=true) -- a quarantined file is gone from where it was; the keeper of each duplicate set is never moved, and undo.py puts every mover back."
  * steps:
  *   discover:
  *     type: process.exec
@@ -548,7 +556,7 @@ async function renderSuccess(): Promise<void> {
     applied: applyRan,
     apply_requested: applyRequested,
     apply_result: applyOut,
-    play_version: "0.3.0",
+    play_version: "0.3.1",
     run_id: ctx.run.run_id,
     representations: {
       human: "complete — duplicate sets, linked (non-reclaimable) sets, unknowns, and either the dry-run byte count or what was quarantined",

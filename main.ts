@@ -10,12 +10,12 @@
  * ---
  * name: dupe-sweep
  * source: https://github.com/Satianurag/dupe-sweep
- * description: "Your Downloads folder has the same invoice three times and you didn't put them there -- a browser re-download, a cloud-sync conflict copy, an export run twice. This finds files that are byte-for-byte identical -- proven by a SHA-256 hash match after a cheap size pre-filter, never a filename or size guess -- and quarantines every copy but one, safely. Dry run by default: the first run touches nothing and shows the exact plan, with the exact number of bytes it would reclaim, not an estimate. Pass apply=true to actually move duplicates into a dated quarantine folder, never delete them -- a manifest travels with every run and an undo.py script ships inside the quarantine folder itself, so restoring needs no Rote install, just python3. Two files with identical content and different names are duplicates; two files with the same name and different content are never treated as one, no matter how similar their size. A hardlinked pair is detected and reported separately as already sharing storage -- deleting one would free zero bytes, so it is never counted as reclaimable and never moved. Zero-byte files are excluded outright: hashing them is a tautology and quarantining one reclaims nothing. Never descends into macOS app bundles (.app/.framework/.bundle/.photoslibrary and friends) or .git/node_modules -- those are opaque leaves, because deduplicating a file inside one can silently break an application or a repository, and this play's job is freeing clutter, not taking that risk. A file that changes size or mtime between the initial scan and the moment it would be hashed or moved is skipped with a stated reason, never acted on with stale data. A file that cannot be read (permission denied, vanished mid-scan) is reported, never silently dropped and never counted as clear. The keeper in each set is chosen deterministically -- oldest file first, then by which scanned path was listed first, then shortest path, then alphabetically -- so the same input always produces the same keeper, never a coin flip. Pass demo=true to run against bundled fixtures (including a real hardlinked pair) in an isolated temp copy, so apply=true is safe to try with zero setup and zero risk to anything real. Which copy is kept is controllable: keep_rule=oldest (default), newest, or priority (prefer a designated priority_paths folder as the source of truth, falling back to oldest -- stated, never silent -- when nothing matches), matching the 'keep newest'/'by priority folder' rules documented by real duplicate-finder tools. exclude_paths skips named directories or files entirely, pruned during the walk itself rather than filtered after -- a verified real want, not a guess: fdupes' own issue tracker carries a long-standing user request for exactly this."
+ * description: "Your Downloads folder has the same invoice three times and you didn't put them there. This finds files that are byte-for-byte identical -- proven by a SHA-256 match, never a filename or size guess -- and quarantines every copy but one, reporting the exact bytes reclaimed rather than an estimate. Dry run by default: the first run touches nothing. Nothing is ever deleted -- duplicates move to a dated folder shipping its own undo.py, so restoring needs python3 and no Rote install. A hardlinked pair is reported separately and never counted as reclaimable, because deleting one frees zero bytes. Which copy survives is yours to set (oldest, newest, or a priority folder) and always deterministic. Skips .git, node_modules and macOS app bundles, and never acts on a file that changed mid-scan. Zero credentials, zero network, python3 stdlib only. Try demo=true: fixtures in a temp copy, so apply=true is safe with nothing real at risk."
  * provenance:
  *   author: Satianurag <anuragsati6476@gmail.com>
  *   workspace: satianurag/dupe-sweep
  * metadata:
- *   version: 0.3.1
+ *   version: 0.3.3
  *   rote_version: 0.79.0
  *   status: released
  *   kind: atomic
@@ -556,7 +556,7 @@ async function renderSuccess(): Promise<void> {
     applied: applyRan,
     apply_requested: applyRequested,
     apply_result: applyOut,
-    play_version: "0.3.1",
+    play_version: "0.3.3",
     run_id: ctx.run.run_id,
     representations: {
       human: "complete — duplicate sets, linked (non-reclaimable) sets, unknowns, and either the dry-run byte count or what was quarantined",

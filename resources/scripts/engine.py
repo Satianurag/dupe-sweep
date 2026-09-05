@@ -325,7 +325,13 @@ def build_duplicate_sets(
     skips: list[SkipRecord],
     keep_rule: str = "oldest",
     priority_paths: list[str] | None = None,
-) -> tuple[list[DuplicateSet], list[LinkedSet]]:
+) -> tuple[list[DuplicateSet], list[LinkedSet], str]:
+    """Returns (duplicate sets, hardlinked sets, the keep rule ACTUALLY used).
+
+    The third value matters: keep_rule=priority with nothing under
+    priority_paths degrades to oldest, and that degrade is reported rather
+    than applied silently.
+    """
     # Cheap pre-filter: only files that share an exact size can possibly match.
     by_size: dict[int, list[FileRecord]] = {}
     for r in records:

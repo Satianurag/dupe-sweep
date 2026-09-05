@@ -6,7 +6,7 @@
       "kind": "code",
       "code": 0
     },
-    "duration_ms": 48,
+    "duration_ms": 46,
     "timeout_ms": 60000
   },
   "stdout": "resources/presentation-fixtures/apply/stdout.json",

@@ -11,6 +11,7 @@ so the whole pipeline produces real, meaningful output with zero setup.
 """
 import json
 import os
+import secrets
 import shutil
 import sys
 import tempfile
@@ -31,6 +32,32 @@ def main():
     demo = parse_bool(sys.argv[5]) if len(sys.argv) > 5 else False
     exclude_paths_arg = sys.argv[6] if len(sys.argv) > 6 else ""
     exclude_paths = [p.strip() for p in exclude_paths_arg.split(",") if p.strip()]
+    quarantine_dir = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] else "~/.rote/dupe-sweep/quarantine"
+    if not os.path.isabs(os.path.expanduser(quarantine_dir)):
+        print(json.dumps({
+            "ok": True, "demo": False, "roots_input": [], "roots_resolved": [],
+            "file_count": 0, "skip_count": 0, "excluded_count": 0, "capped": False, "state_file": None,
+            "warning": f"quarantine_dir must be absolute, got a relative path: {quarantine_dir!r}",
+        }))
+        return
+    # A quarantine_dir sitting inside one of the scanned paths would mean
+    # the NEXT run treats run 1's already-quarantined copies as live
+    # duplicate candidates -- and since shutil.move preserves mtime, the
+    # quarantined copy can even win the oldest-wins keeper tie-break,
+    # moving the user's real, live file into quarantine instead. Always
+    # excluded automatically; the caller never has to remember to.
+    exclude_paths = exclude_paths + [quarantine_dir]
+    exclude_non_absolute = [p for p in exclude_paths if not os.path.isabs(os.path.expanduser(p))]
+    if exclude_non_absolute:
+        print(json.dumps({
+            "ok": True, "demo": False, "roots_input": [], "roots_resolved": [],
+            "file_count": 0, "skip_count": 0, "excluded_count": 0, "capped": False, "state_file": None,
+            "warning": (
+                f"exclude_paths must be absolute, got relative path(s): {exclude_non_absolute!r} — "
+                "same reason paths must be absolute: steps run in an isolated Rote workspace."
+            ),
+        }))
+        return
 
     if demo:
         # Copied into a fresh temp dir every run, never scanned in place:
@@ -80,6 +107,30 @@ def main():
     else:
         roots = [p.strip() for p in paths_arg.split(",") if p.strip()]
 
+    # Every process.exec step's CWD is an isolated Rote-managed workspace,
+    # not the caller's terminal directory -- confirmed by testing, not
+    # assumed (a sibling play hit this first). A relative `paths` entry
+    # would silently resolve against that workspace instead, which for
+    # THIS play contains its own bundled demo fixtures -- so `paths=.`
+    # would scan and report the play's own shipped files as the caller's
+    # duplicates, and apply=true would move them. Refused outright, the
+    # same way ci-digest-guard already refuses a non-absolute repo_path.
+    if not demo:
+        non_absolute = [r for r in roots if not os.path.isabs(os.path.expanduser(r))]
+        if non_absolute:
+            result = {
+                "ok": True, "demo": demo, "roots_input": roots, "roots_resolved": [],
+                "file_count": 0, "skip_count": 0, "excluded_count": 0, "capped": False, "state_file": None,
+                "warning": (
+                    f"paths must be absolute, got relative path(s): {non_absolute!r} — "
+                    "steps run in an isolated Rote workspace, not your terminal's directory, "
+                    "so a relative path cannot be resolved against anything meaningful. "
+                    "Pass an absolute path, e.g. paths=$(pwd) or paths=~/Downloads."
+                ),
+            }
+            print(json.dumps(result))
+            return
+
     # The full file inventory can be arbitrarily large (one entry per
     # scanned file) -- far past the 64KB ceiling Rote enforces on a
     # cross-step @step{...} argv substitution (confirmed by testing: a real
@@ -89,7 +140,12 @@ def main():
     # run's shared workspace directory instead, and stdout carries only a
     # small, boundedly-sized summary plus the state file's path -- the next
     # step reads the file itself rather than receiving the data inline.
-    state_file = "dupe_sweep_discover_state.json"
+    # Unique per invocation: two runs sharing a workspace (concurrent runs,
+    # or a fast repeat) must never read or overwrite each other's state --
+    # a fixed filename risked exactly that, one run's scan silently reading
+    # a half-written or already-superseded inventory from another.
+    run_token = secrets.token_hex(6)
+    state_file = f"dupe_sweep_discover_state_{run_token}.json"
 
     if not roots:
         result = {
@@ -120,6 +176,7 @@ def main():
             "max_files": max_files,
             "exclude_paths": exclude_paths,
             "state_file": state_file,
+            "run_token": run_token,
         }
 
     print(json.dumps(result))

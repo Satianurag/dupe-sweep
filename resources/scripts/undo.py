@@ -35,8 +35,17 @@ def main():
         if not os.path.isfile(quarantined):
             skipped.append((quarantined, "no longer in quarantine (already restored or moved)"))
             continue
-        os.makedirs(os.path.dirname(original), exist_ok=True)
-        shutil.move(quarantined, original)
+        try:
+            os.makedirs(os.path.dirname(original), exist_ok=True)
+            shutil.move(quarantined, original)
+        except OSError as exc:
+            # One entry's original parent being read-only, or itself now a
+            # file instead of a directory, must not abort every remaining
+            # entry -- confirmed as a real gap: an unguarded move here
+            # meant a single bad entry silently stopped every restore
+            # after it, with no "restored N" summary ever printed at all.
+            skipped.append((quarantined, f"restore failed: {exc.strerror or exc}"))
+            continue
         restored += 1
 
     print(f"restored {restored} file(s)")

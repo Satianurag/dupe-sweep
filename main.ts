@@ -138,6 +138,7 @@
  *     - $include_hidden
  *     - $demo
  *     - $exclude_paths
+ *     - $quarantine_dir
  *   scan:
  *     type: process.exec
  *     timeout_ms: 60000
@@ -348,6 +349,35 @@ async function renderSuccess(): Promise<void> {
   const discoverOut = readDiscoverStdout();
   const scanOut = readScanStdout();
 
+  if (scanOut.error) {
+    // discover promised a state file that no longer exists by the time
+    // scan ran (disk-full write failure, a recycled workspace, two
+    // concurrent runs colliding on one fixed filename). This must never
+    // render as CLEAR just because duplicate_sets happens to be empty --
+    // this play's entire point is that a scan that didn't actually happen
+    // is UNKNOWN, not clean.
+    out.human([
+      "dupe-sweep · scan failed",
+      "",
+      `  ${String(scanOut.error)}`,
+      "",
+      "  This is UNKNOWN, not clean — nothing was actually scanned. Try running again.",
+    ].join("\n"));
+    out.summary("UNKNOWN · scan failed");
+    out.result({
+      schema: "dupe-sweep/1",
+      scanned: false,
+      verdict: "UNKNOWN",
+      reason: scanOut.error,
+      representations: {
+        human: "complete — why the scan could not run",
+        json: "canonical — verdict UNKNOWN with the specific reason",
+        summary: "intentionally lossy — UNKNOWN verdict only",
+      },
+    });
+    return;
+  }
+
   const rootsResolved = (discoverOut.roots_resolved as string[]) ?? [];
   const filesScanned = Number(scanOut.files_scanned ?? 0);
   const dupSets = (scanOut.duplicate_sets as DuplicateSet[]) ?? [];
@@ -375,25 +405,29 @@ async function renderSuccess(): Promise<void> {
   const lines: string[] = [];
 
   if (rootsResolved.length === 0 && !demo) {
+    const specificReason = discoverOut.warning ? String(discoverOut.warning) : null;
     out.human([
       "dupe-sweep · no directories to scan",
       "",
-      "  No valid paths were given, so nothing was checked — this is UNKNOWN, not clean.",
+      specificReason
+        ? `  ${specificReason}`
+        : "  No valid paths were given, so nothing was checked — this is UNKNOWN, not clean.",
       "",
       "  Point it at a real folder:",
       "    rote play run satianurag/dupe-sweep paths=~/Downloads",
       "  Or see it work on bundled fixtures first:",
       "    rote play run satianurag/dupe-sweep demo=true",
     ].join("\n"));
-    out.summary("UNKNOWN · no directories scanned");
+    out.summary(specificReason ? `UNKNOWN · ${specificReason.slice(0, 60)}` : "UNKNOWN · no directories scanned");
     out.result({
       schema: "dupe-sweep/1",
       scanned: false,
       verdict: "UNKNOWN",
+      reason: specificReason,
       roots_resolved: [],
       representations: {
         human: "complete — why nothing was scanned and the two ways forward",
-        json: "canonical — verdict is UNKNOWN because zero directories were scanned",
+        json: "canonical — verdict is UNKNOWN because zero directories were scanned, reason names why",
         summary: "intentionally lossy — UNKNOWN verdict only",
       },
     });
@@ -407,8 +441,19 @@ async function renderSuccess(): Promise<void> {
   lines.push(`dupe-sweep · ${filesScanned} file(s) scanned · ${rootsLabel}${badge}`);
   lines.push("");
 
-  if (totalDupSets === 0) {
+  // A scan that hit max_files before finishing the tree, or that could
+  // not read some files at all, has not actually looked at everything --
+  // reporting CLEAR in that case would be the exact false "all clear"
+  // this play's own docs promise never to give. UNKNOWN when zero
+  // duplicate sets were found but the scan wasn't provably complete;
+  // CLEAR only when it was.
+  const scanIncomplete = capped || skips.length > 0;
+  const verdict = totalDupSets > 0 ? "FOUND" : scanIncomplete ? "UNKNOWN" : "CLEAR";
+
+  if (totalDupSets === 0 && verdict === "CLEAR") {
     lines.push("  CLEAR — no exact duplicates found.");
+  } else if (totalDupSets === 0) {
+    lines.push("  UNKNOWN — no exact duplicates found among what could be scanned, but the scan was incomplete (see below). Not the same as clean.");
   } else {
     for (const s of dupSets) {
       lines.push(`  FOUND    ${formatBytes(s.size)} × ${s.duplicates.length + 1} copies`);
@@ -476,7 +521,7 @@ async function renderSuccess(): Promise<void> {
   out.human(lines.join("\n"));
 
   const summaryVerdict = totalDupSets === 0
-    ? "CLEAR"
+    ? verdict  // "CLEAR" or "UNKNOWN"
     : applyRan
       ? `quarantined ${applyOut ? Number(applyOut.moved ?? 0) : 0} file(s)`
       : `${totalDupSets} set(s) · ${formatBytes(totalReclaimable)} reclaimable · dry run`;
@@ -485,6 +530,7 @@ async function renderSuccess(): Promise<void> {
   out.result({
     schema: "dupe-sweep/1",
     scanned: true,
+    verdict,
     files_scanned: filesScanned,
     roots_resolved: rootsResolved,
     demo,

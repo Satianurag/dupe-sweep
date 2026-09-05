@@ -52,7 +52,7 @@ import os
 import shutil
 import sys
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 HASH_CHUNK = 1024 * 1024  # 1 MiB streamed reads; never load a whole file into memory
 BUNDLE_SUFFIXES = (
@@ -91,21 +91,67 @@ def is_hidden(name: str) -> bool:
     return name.startswith(".")
 
 
-def resolve_exclude_prefixes(exclude_paths: list[str]) -> list[str]:
+def resolve_exclude_prefixes(exclude_paths: list[str]) -> list[tuple[str, tuple[int, int] | None]]:
+    """Returns (string_path, (dev, ino) or None) pairs. The stat identity is
+    what actually decides exclusion (see is_excluded); the string is kept
+    only to report a path that doesn't exist as a named warning rather
+    than silently matching nothing."""
     resolved = []
     for p in exclude_paths:
         p = p.strip()
         if not p:
             continue
-        resolved.append(os.path.realpath(os.path.expanduser(p)))
+        real = os.path.realpath(os.path.expanduser(p))
+        try:
+            st = os.stat(real)
+            identity = (st.st_dev, st.st_ino)
+        except OSError:
+            identity = None
+        resolved.append((real, identity))
     return resolved
 
 
-def is_excluded(path: str, exclude_prefixes: list[str]) -> bool:
+def is_excluded(path: str, exclude_prefixes: list[tuple[str, tuple[int, int] | None]]) -> bool:
+    """Identity-based, not string-based: os.path.realpath does NOT correct
+    case on macOS's default case-insensitive-but-case-preserving APFS --
+    confirmed directly (realpath('/x/archives') stays '/x/archives' even
+    when the real directory on disk is 'Archives'), while os.stat resolves
+    both to the identical (dev, ino) since the filesystem itself is
+    case-insensitive. A string-prefix check alone would silently exclude
+    nothing for a caller who typed the wrong case, and with apply=true
+    the files they explicitly listed as "never touch" get moved anyway."""
+    if not exclude_prefixes:
+        return False
+    try:
+        st_target = os.stat(path)
+        target_identity = (st_target.st_dev, st_target.st_ino)
+    except OSError:
+        target_identity = None
+
     real = os.path.realpath(path)
-    for prefix in exclude_prefixes:
+    for prefix, prefix_identity in exclude_prefixes:
         if real == prefix or real.startswith(prefix + os.sep):
             return True
+        if target_identity is not None and prefix_identity is not None and target_identity == prefix_identity:
+            return True
+    # Ancestry walk by identity, for a differently-cased path whose EXACT
+    # string never matches the prefix string at any level.
+    if target_identity is not None:
+        current = os.path.dirname(real)
+        seen_dev_ino = set()
+        while current and current != os.path.dirname(current):
+            try:
+                st = os.stat(current)
+            except OSError:
+                break
+            key = (st.st_dev, st.st_ino)
+            if key in seen_dev_ino:
+                break  # symlink loop guard
+            seen_dev_ino.add(key)
+            for _prefix, prefix_identity in exclude_prefixes:
+                if prefix_identity is not None and key == prefix_identity:
+                    return True
+            current = os.path.dirname(current)
     return False
 
 
@@ -123,6 +169,7 @@ def discover_files(
     capped = False
     excluded_count = 0
     seen_paths: set[str] = set()
+    seen_root_identity: set[tuple[int, int]] = set()
     exclude_prefixes = resolve_exclude_prefixes(exclude_paths or [])
 
     for raw_root in roots:
@@ -136,6 +183,26 @@ def discover_files(
             # scanned anyway and never silently dropped without a trace.
             skips.append(SkipRecord(path=root, reason="this path is itself in exclude_paths — nothing scanned here"))
             continue
+        # Two `paths` entries that name the SAME on-disk directory --
+        # exact duplicates, or two differently-cased spellings of one
+        # directory on macOS's case-insensitive-but-case-preserving APFS
+        # (`paths=<root>/d1,<root>/D1`) -- must be walked once, not twice.
+        # This is deliberately scoped to ROOTS only: two files reached
+        # during a single walk that happen to be hardlinks of each other
+        # are a different, legitimate thing this play already detects and
+        # reports separately (see build_duplicate_sets' by_inode
+        # partition) -- deduping by identity at the per-file level instead
+        # of here was tried and found to silently make one of a real
+        # hardlinked pair disappear before it ever reached that logic.
+        try:
+            root_identity = (os.stat(root).st_dev, os.stat(root).st_ino)
+        except OSError:
+            root_identity = None
+        if root_identity is not None:
+            if root_identity in seen_root_identity:
+                skips.append(SkipRecord(path=root, reason="same directory as another paths entry (possibly different case) — scanned once"))
+                continue
+            seen_root_identity.add(root_identity)
         resolved_roots.append(root)
 
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -168,9 +235,6 @@ def discover_files(
                 if is_excluded(fpath, exclude_prefixes):
                     excluded_count += 1
                     continue
-                real = os.path.realpath(fpath)
-                if real in seen_paths:
-                    continue  # same file reached via two overlapping roots
                 if len(records) >= max_files:
                     capped = True
                     break
@@ -179,6 +243,19 @@ def discover_files(
                 except OSError as exc:
                     skips.append(SkipRecord(path=fpath, reason=f"stat failed: {exc.strerror or exc}"))
                     continue
+                # Realpath STRING, deliberately not identity: this catches
+                # the same path reached twice through overlapping roots
+                # (paths=~/a,~/a/b re-walks everything under b twice).
+                # Identity (dev, ino) was tried here instead, to also catch
+                # two differently-cased ROOT directories -- but that also
+                # silently made one half of a real hardlinked pair vanish
+                # before build_duplicate_sets' own by_inode partition ever
+                # saw it, which is where hardlink detection actually
+                # belongs. The differently-cased-root case is now handled
+                # once, at the root level, above -- not here.
+                real = os.path.realpath(fpath)
+                if real in seen_paths:
+                    continue  # same file reached via two overlapping roots
                 if st.st_size == 0:
                     continue  # zero-byte files: excluded, see module docstring
                 if st.st_size < min_size_bytes:
@@ -214,6 +291,7 @@ class DuplicateSet:
     keep: str
     duplicates: list[str]
     reclaimable_bytes: int
+    duplicate_mtimes: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -334,6 +412,7 @@ def build_duplicate_sets(
             keep=keeper.path,
             duplicates=[d.path for d in dups],
             reclaimable_bytes=keeper.size * len(dups),
+            duplicate_mtimes={d.path: d.mtime for d in dups},
         ))
 
     dup_sets.sort(key=lambda s: -s.reclaimable_bytes)
@@ -349,6 +428,11 @@ class ManifestEntry:
     kept_path: str
 
 
+def _write_manifest(manifest_path: str, manifest: list[ManifestEntry]) -> None:
+    with open(manifest_path, "w") as f:
+        json.dump([asdict(m) for m in manifest], f, indent=2)
+
+
 def apply_quarantine(
     dup_sets: list[DuplicateSet],
     quarantine_root: str,
@@ -357,18 +441,54 @@ def apply_quarantine(
     dest_dir = os.path.join(os.path.expanduser(quarantine_root), run_id)
     os.makedirs(dest_dir, exist_ok=True)
 
+    manifest_path = os.path.join(dest_dir, "manifest.json")
     manifest: list[ManifestEntry] = []
+    # Written empty and undo.py copied in BEFORE the first file is ever
+    # moved -- confirmed necessary by tracing what happens if this step is
+    # killed (timeout, apply=true on thousands of files, a cross-device
+    # move that silently degrades shutil.move to copy+delete on 20GB):
+    # every move up to that point had already happened, but with the old
+    # write-once-at-the-end manifest, nothing anywhere recorded where any
+    # of them came from. This play's one central promise is "reversible,
+    # never deleted" -- that promise was void for exactly the runs large
+    # enough, or slow enough, to need it most.
+    _write_manifest(manifest_path, manifest)
+    undo_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "undo.py")
+    if os.path.isfile(undo_src):
+        shutil.copy2(undo_src, os.path.join(dest_dir, "undo.py"))
+
     failures: list[SkipRecord] = []
 
     for s in dup_sets:
+        # The keeper is never re-verified once chosen at scan time -- if it
+        # was itself deleted or moved since, every "duplicate" in this set
+        # would otherwise be quarantined, leaving zero copies anywhere.
+        # Confirmed as a real, not hypothetical, gap in the original apply
+        # logic, which only ever re-checked the files it was about to move.
+        if not os.path.isfile(s.keep):
+            for dup_path in s.duplicates:
+                failures.append(SkipRecord(
+                    path=dup_path,
+                    reason=f"keeper no longer exists ({s.keep}) — refusing to quarantine any copy in this set",
+                ))
+            continue
+
         for dup_path in s.duplicates:
             try:
                 st = os.stat(dup_path, follow_symlinks=False)
             except OSError as exc:
                 failures.append(SkipRecord(path=dup_path, reason=f"vanished before move: {exc.strerror or exc}"))
                 continue
-            if st.st_size != s.size:
-                failures.append(SkipRecord(path=dup_path, reason="size changed since scan — not moved"))
+            # Size alone is not proof the content is unchanged -- a file
+            # edited in place to the same byte length (a config file, a
+            # fixed-width record, a tool that rewrites a timestamp) would
+            # otherwise be quarantined as if it were still the identical
+            # duplicate hashed at scan time. mtime is checked too, matching
+            # the same TOCTOU guard build_duplicate_sets already applies
+            # before hashing -- this is the same check at the other end of
+            # the same window, not a new invariant.
+            if st.st_size != s.size or st.st_mtime != s.duplicate_mtimes.get(dup_path):
+                failures.append(SkipRecord(path=dup_path, reason="changed on disk since scan — not moved"))
                 continue
 
             base = os.path.basename(dup_path)
@@ -399,13 +519,9 @@ def apply_quarantine(
                 size=s.size,
                 kept_path=s.keep,
             ))
-
-    manifest_path = os.path.join(dest_dir, "manifest.json")
-    with open(manifest_path, "w") as f:
-        json.dump([asdict(m) for m in manifest], f, indent=2)
-
-    undo_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "undo.py")
-    if os.path.isfile(undo_src):
-        shutil.copy2(undo_src, os.path.join(dest_dir, "undo.py"))
+            # Re-written after every single move, not batched at the end:
+            # a run killed here still leaves an accurate record of
+            # everything moved up to this exact point.
+            _write_manifest(manifest_path, manifest)
 
     return manifest, failures, dest_dir

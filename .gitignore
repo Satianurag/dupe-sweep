@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 .rote-flow-lint.json
+dupe_sweep_discover_state_*.json
+dupe_sweep_scan_state_*.json

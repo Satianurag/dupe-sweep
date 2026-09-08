@@ -118,6 +118,14 @@ def main():
 
     def capped_set_dict(s: engine.DuplicateSet) -> dict:
         d = engine.asdict(s)
+        # The TRUE number of duplicates, recorded before any trimming. The
+        # card renders "x N copies" and derived N from the length of this
+        # list, so every trim silently changed the headline COUNT and not
+        # just how much of the list was shown: a set of 200 identical files
+        # displayed "x 51 copies" under DUPLICATES_PER_SET_CAP alone. A
+        # count that shrinks with the preview is simply wrong -- the whole
+        # point of the row is how many copies exist.
+        d["duplicates_total"] = len(d["duplicates"])
         if len(d["duplicates"]) > DUPLICATES_PER_SET_CAP:
             d["duplicates"] = d["duplicates"][:DUPLICATES_PER_SET_CAP]
         d.pop("duplicate_mtimes", None)  # internal bookkeeping, not needed in the preview
@@ -127,6 +135,9 @@ def main():
         "ok": True,
         "files_scanned": len(records),
         "duplicate_sets": [capped_set_dict(s) for s in dup_sets[:PREVIEW_CAP]],
+        # NOTE: the count caps above are necessary but not sufficient; the
+        # byte-measured pass in emit_within_ceiling() below is what actually
+        # guarantees this payload fits. See its docstring.
         "linked_sets": [engine.asdict(s) for s in linked_sets[:PREVIEW_CAP]],
         "skips": [engine.asdict(s) for s in skips[:PREVIEW_CAP]],
         "total_reclaimable_bytes": total_reclaimable,
@@ -143,6 +154,61 @@ def main():
         "demo": discover_summary.get("demo", False),
         "capped": discover_summary.get("capped", False),
     }
+    emit_within_ceiling(result)
+
+
+# Bytes of stdout the runner will parse, with headroom under its hard 65536.
+STDOUT_CEILING = 62000
+
+
+def emit_within_ceiling(result):
+    """Print `result`, shrinking the preview until it actually fits.
+
+    PREVIEW_CAP (150 sets) and DUPLICATES_PER_SET_CAP (50 paths per set)
+    bound the preview by COUNT, which is not the same as bounding it by
+    SIZE: a duplicate path is as long as wherever it lives, and 150 sets x
+    50 copies of a real synced-folder path is roughly 947KB -- fourteen
+    times the ceiling. Confirmed fatal, not theoretical: a folder shaped
+    like an ordinary synced archive (200 documents, each existing in 12
+    dated subfolders) killed the whole run with
+
+      step scan stdout is not JSON: Expected ',' or ']' after array element
+      in JSON at position 65536
+
+    which is the DEFAULT shape of this play's DEFAULT target, ~/Downloads.
+    apply.py always reads the complete, uncapped sets from the state file,
+    so shrinking here costs the preview detail and nothing else. The totals
+    never shrink, and preview_capped already tells the reader the list is
+    partial.
+    """
+    def size(payload):
+        return len(json.dumps(payload).encode("utf-8"))
+
+    if size(result) <= STDOUT_CEILING:
+        print(json.dumps(result))
+        return
+
+    result["preview_capped"] = True
+    # Shed the least informative first: skips, then hard-linked sets (which
+    # reclaim nothing), then the duplicate paths inside each set, then whole
+    # sets. A reader losing the 40th path of the 90th set loses nothing a
+    # total does not already say.
+    for key in ("skips", "linked_sets"):
+        if size(result) <= STDOUT_CEILING:
+            break
+        result[key] = result[key][:5]
+
+    for per_set in (20, 10, 5, 2):
+        if size(result) <= STDOUT_CEILING:
+            break
+        for entry in result["duplicate_sets"]:
+            entry["duplicates"] = entry["duplicates"][:per_set]
+
+    while size(result) > STDOUT_CEILING and len(result["duplicate_sets"]) > 1:
+        # Halve rather than drop one at a time: 150 sets would otherwise
+        # re-serialise the payload ~150 times.
+        result["duplicate_sets"] = result["duplicate_sets"][:max(1, len(result["duplicate_sets"]) // 2)]
+
     print(json.dumps(result))
 
 

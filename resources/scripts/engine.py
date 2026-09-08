@@ -54,6 +54,10 @@ import sys
 import time
 from dataclasses import dataclass, asdict, field
 
+# The play's version, in one place on the Python side. main.ts carries the
+# only other copy; the test suite asserts both agree with the frontmatter.
+PLAY_VERSION = "0.4.0"
+
 HASH_CHUNK = 1024 * 1024  # 1 MiB streamed reads; never load a whole file into memory
 BUNDLE_SUFFIXES = (
     ".app", ".framework", ".bundle", ".plugin", ".kext",

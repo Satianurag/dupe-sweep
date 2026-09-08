@@ -15,7 +15,7 @@
  *   author: Satianurag <anuragsati6476@gmail.com>
  *   workspace: satianurag/dupe-sweep
  * metadata:
- *   version: 0.3.4
+ *   version: 0.4.0
  *   rote_version: 0.79.0
  *   status: released
  *   kind: atomic
@@ -200,6 +200,10 @@
 // Imports ONLY the presentation SDK; owns no effects, no fs, no fetch.
 // ---------------------------------------------------------------------------
 
+// One copy of the version on the presentation side; engine.py carries the
+// Python-side copy and the test suite asserts both agree with the frontmatter.
+const PLAY_VERSION = "0.4.0";
+
 const {
   FlowOutput,
   isProcessExecBody,
@@ -220,6 +224,7 @@ interface DuplicateSet {
   size: number;
   keep: string;
   duplicates: string[];
+  duplicates_total?: number;
   reclaimable_bytes: number;
 }
 
@@ -464,7 +469,13 @@ async function renderSuccess(): Promise<void> {
     lines.push("  UNKNOWN — no exact duplicates found among what could be scanned, but the scan was incomplete (see below). Not the same as clean.");
   } else {
     for (const s of dupSets) {
-      lines.push(`  FOUND    ${formatBytes(s.size)} × ${s.duplicates.length + 1} copies`);
+      // duplicates_total is the count BEFORE the stdout preview was
+      // trimmed; s.duplicates is only what fit. Deriving the headline from
+      // the trimmed list made the count itself wrong, not merely partial.
+      const totalCopies = (s.duplicates_total ?? s.duplicates.length) + 1;
+      const shownCopies = s.duplicates.length + 1;
+      const partial = totalCopies > shownCopies ? ` (showing ${shownCopies})` : "";
+      lines.push(`  FOUND    ${formatBytes(s.size)} × ${totalCopies} copies${partial}`);
       lines.push(`           keep: ${s.keep}`);
       for (const d of s.duplicates) {
         lines.push(`           dup:  ${d}`);
@@ -556,7 +567,7 @@ async function renderSuccess(): Promise<void> {
     applied: applyRan,
     apply_requested: applyRequested,
     apply_result: applyOut,
-    play_version: "0.3.4",
+    play_version: PLAY_VERSION,
     run_id: ctx.run.run_id,
     representations: {
       human: "complete — duplicate sets, linked (non-reclaimable) sets, unknowns, and either the dry-run byte count or what was quarantined",

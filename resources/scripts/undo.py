@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Undo one dupe-sweep quarantine run. Standalone stdlib script -- this file
 gets copied into every quarantine run directory alongside manifest.json, so
-undo works even without Rote installed, from the quarantine directory
-itself: `python3 undo.py` (run from inside the dated quarantine folder, or
-pass the manifest path explicitly as argv[1]).
+undo works even without Rote installed: `python3 <quarantine>/undo.py` from
+anywhere, `python3 undo.py` from inside the dated quarantine folder, or with
+the manifest path passed explicitly as argv[1]. The manifest is looked for
+beside this script first, so the absolute form the card prints works.
 
 Refuses to overwrite anything already sitting at the original path -- if a
 new file has since been created there, that entry is reported and skipped
@@ -16,7 +17,20 @@ import sys
 
 
 def main():
-    manifest_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.getcwd(), "manifest.json")
+    # Next to THIS SCRIPT, not next to wherever the caller happens to
+    # stand. The card prints the absolute form -- `python3
+    # /Users/you/.rote/dupe-sweep/quarantine/<run>/undo.py` -- and with a
+    # cwd-relative default that exact command found no manifest and
+    # restored nothing, printing "no manifest found at /Users/you/
+    # manifest.json" while the quarantined files sat untouched. This play's
+    # entire safety claim is that quarantining is reversible; the one
+    # command it tells you to run for that has to work as printed.
+    here = os.path.dirname(os.path.abspath(__file__))
+    if len(sys.argv) > 1:
+        manifest_path = sys.argv[1]
+    else:
+        beside_script = os.path.join(here, "manifest.json")
+        manifest_path = beside_script if os.path.isfile(beside_script) else os.path.join(os.getcwd(), "manifest.json")
     if not os.path.isfile(manifest_path):
         print(f"no manifest found at {manifest_path}")
         return 1

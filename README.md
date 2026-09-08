@@ -146,7 +146,40 @@ Undo any run:
 python3 ~/.rote/dupe-sweep/quarantine/<run-timestamp>/undo.py
 ```
 
+That absolute form is the one the card prints, and it now works from anywhere:
+`undo.py` looks for its manifest beside itself first. Before 0.4.0 it looked
+only in the caller's current directory, so running it exactly as printed
+restored nothing and said `no manifest found at ~/manifest.json` while the
+files sat safely — but apparently lost — in quarantine.
+
+```bash
+# equivalent forms
+cd ~/.rote/dupe-sweep/quarantine/<run-timestamp> && python3 undo.py
+python3 undo.py /path/to/manifest.json
+```
+
 No third-party dependencies: pure `python3` standard library end to end —
 `hashlib`, `os`, `shutil`, `json`, `dataclasses`. Nothing to `pip install` on
 a machine that may not allow it. No network, no credentials, no `git`/`gh` —
 every step is a local filesystem operation.
+
+
+## Large scans
+
+The runner parses a step's whole stdout as JSON under a hard 65536-byte
+ceiling, and overflowing it means no output at all. The full duplicate sets
+always go to a state file that `apply=true` reads; stdout carries a preview
+that is now bounded by **bytes**, not just by set count — 150 sets × 50 copies
+of a real synced-folder path is about 947KB, fourteen times the ceiling, and
+an ordinary synced archive (200 documents each existing in 12 dated
+subfolders) was enough to kill the run outright.
+
+The preview shrinks; **the totals never do**, and `apply=true` still acts on
+every set. A trimmed set shows its true copy count with the shown count beside
+it: `4.88 KB × 12 copies (showing 3)`.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s resources/tests
+```
